@@ -15,5 +15,5 @@ fi
 source venv/bin/activate
 cd page-based
 
-echo "## Running page-based/classify.py on $SRC_DIR"
-python classify.py "--input_dir=$SRC_DIR" --output_dir ../output
+echo "## Running page-based/measure.py on $SRC_DIR"
+python measure.py "--input_dir=$SRC_DIR" --output_dir ../output

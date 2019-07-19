@@ -185,11 +185,10 @@ def load_coco_names(file_name):
     return names
 
 
-def draw_boxes(boxes, img, cls_names, detection_size):
+def draw_boxes(boxes, img, cls_names, detection_size, color=(255, 0, 0)):
     draw = ImageDraw.Draw(img)
 
     for cls, bboxs in boxes.items():
-        color = tuple([255, 0, 0])
         for box, score in bboxs:
             box = convert_to_original_size(box, np.array(detection_size), np.array(img.size))
             cor = box
