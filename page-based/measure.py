@@ -1,5 +1,7 @@
 """Measure the performance of ML ad detector."""
 
+import csv
+import glob
 import os
 from timeit import default_timer as timer
 
@@ -46,6 +48,31 @@ def convert_regions(regions_dict):
     }
 
 
+def load_regions(input_dir, region_types=['textad', 'bannerad']):
+    """Load regions information from a CSV file."""
+    rmap = {}
+    for csv_file in glob.glob(os.path.join(input_dir, '*.csv')):
+        with open(csv_file, 'r', encoding='utf-8') as f:
+            for i, row in enumerate(csv.reader(f)):
+                if i == 0 and row[1:5] == ['xmin', 'ymin', 'xmax', 'ymax']:
+                    continue  # Header.
+                if row[5] not in region_types:
+                    continue  # Non-selected region type
+                image = os.path.join(input_dir, row[0])
+                box = np.array([float(i) for i in row[1:5]])
+                rmap.setdefault(image, []).append(box)
+
+    # Rescale box coordinates to be in [0,1] interval and save in the right
+    # data structure.
+    ret = {}
+    for image, boxes in rmap.items():
+        img = Image.open(image)
+        scaling_factor = np.array(list(img.size) * 2)
+        ret[image] = {0: [(box / scaling_factor, 1) for box in boxes]}
+
+    return ret
+
+
 def load_image_metadata(input_dir):
     """Load the list of images and regions.
 
@@ -83,9 +110,11 @@ def load_image_metadata(input_dir):
             for image_file, label_file in zip(image_files, label_files)
         ]
     else:
-        # if img.mode == 'RGBA':
-        #     img = img.convert(mode='RGB')
-        pass
+        regions = load_regions(input_dir)
+        return [
+            (image_file, regions.get(image_file, {0: []}))
+            for image_file in get_images(input_dir)
+        ]
 
 
 def scale_regions(regions_dict, ratio):
@@ -158,7 +187,7 @@ def main(argv):
     )
     image_meta = load_image_metadata(FLAGS.input_dir)
     safe_mkdir(FLAGS.output_dir)
-    total_tp = total_fn = total_fp = total_precision = 0
+    total_tp = total_fn = total_fp = 0
 
     for idx, (image_file, regions) in enumerate(image_meta):
         out_name = '{}.png'.format(idx)
@@ -166,6 +195,8 @@ def main(argv):
 
         img_orig = Image.open(image_file)
         img = img_orig.resize((416, 416))
+        if img.mode == 'RGBA':
+            img = img.convert(mode='RGB')
 
         t1 = timer()
         detected_boxes = sess.run(
@@ -197,13 +228,11 @@ def main(argv):
         total_tp += tp
         total_fn += fn
         total_fp += fp
-        total_precision += tp / (tp + fp + 1e-5)
 
     print('\nOverall results:')
     print('TP:{} FN:{} FP:{}'.format(total_tp, total_fn, total_fp))
     print('Recall: {:.2%}'.format(total_tp / (total_tp + total_fn)))
     print('Precision: {:.2%}'.format(total_tp / (total_tp + total_fp)))
-    print('MAP: {:.2%}'.format(total_precision / len(image_meta)))
 
 
 if __name__ == '__main__':
