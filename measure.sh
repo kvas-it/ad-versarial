@@ -1,10 +1,11 @@
 #!/bin/bash
 
 if [ "$1" == "" ]; then
-    echo "Usage: $0 SOURCE-DIR"
+    echo "Usage: $0 SOURCE-DIR [FLAGS]"
     exit 1
 else
     SRC_DIR=`realpath "$1"`
+    shift
 fi
 
 if [ -d output ]; then
@@ -16,4 +17,4 @@ source venv/bin/activate
 cd page-based
 
 echo "## Running page-based/measure.py on $SRC_DIR"
-python measure.py "--input_dir=$SRC_DIR" --output_dir ../output
+python measure.py $* "--input_dir=$SRC_DIR" --output_dir ../output

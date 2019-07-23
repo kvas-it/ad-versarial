@@ -2,6 +2,7 @@
 
 import csv
 import glob
+import json
 import os
 from timeit import default_timer as timer
 
@@ -21,6 +22,7 @@ TFF.DEFINE_string('weights_file', '../models/page_based_yolov3.weights',
 
 TFF.DEFINE_integer('size', 416, 'Image size')
 
+TFF.DEFINE_float('supp_threshold', 0.1, 'Suppression threshold')
 TFF.DEFINE_float('conf_threshold', 0.5, 'Confidence threshold')
 TFF.DEFINE_float('iou_threshold', 0.4, 'IoU threshold')
 TFF.DEFINE_float('match_threshold', 0.4,
@@ -176,6 +178,39 @@ def compare(detected, expected):
     return tp, fn, fp
 
 
+def finalize_summary(summary, path):
+    """Finalize the summary: calculate totals and save as JSON."""
+    stats = {
+        s: sum(i[s] for i in summary['images'])
+        for s in ['tp', 'fn', 'fp']
+    }
+    stats['recall'] = stats['tp'] / (stats['tp'] + stats['fn'])
+    stats['precision'] = stats['tp'] / (stats['tp'] + stats['fp'])
+    summary['stats'] = stats
+
+    with open(path, 'wt', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, sort_keys=True)
+
+    print('\nOverall results:')
+    print('TP:{0[tp]} FN:{0[fn]} FP:{0[fp]}'.format(stats))
+    print('Recall: {0[recall]:.2%}'.format(stats))
+    print('Precision: {0[precision]:.2%}'.format(stats))
+
+
+def conv_boxes(box_map):
+    """Convert boxes for category 0 to JSON-friendly format."""
+    return [
+        {
+            'x0': float(box[0]),
+            'y0': float(box[1]),
+            'x1': float(box[2]),
+            'y1': float(box[3]),
+            'p': float(p),
+        }
+        for box, p in box_map.get(0, [])
+    ],
+
+
 def main(argv):
     classes = load_coco_names(FLAGS.class_names)
     inputs = tf.placeholder(tf.float32, [None, FLAGS.size, FLAGS.size, 3])
@@ -187,11 +222,23 @@ def main(argv):
     )
     image_meta = load_image_metadata(FLAGS.input_dir)
     safe_mkdir(FLAGS.output_dir)
-    total_tp = total_fn = total_fp = 0
+    summary = {
+        'flags': {
+            'input_dir': FLAGS.input_dir,
+            'output_dir': FLAGS.output_dir,
+            'size': FLAGS.size,
+            'suppression_threshold': FLAGS.supp_threshold,
+            'detection_threshold': FLAGS.conf_threshold,
+            'iou_threshold': FLAGS.iou_threshold,
+            'match_threshold': FLAGS.match_threshold,
+        },
+        'images': [],
+    }
 
     for idx, (image_file, regions) in enumerate(image_meta):
+        in_name = os.path.basename(image_file)
         out_name = '{}.png'.format(idx)
-        print(image_file, '->', out_name)
+        print(in_name, '->', out_name)
 
         img_orig = Image.open(image_file)
         img = img_orig.resize((416, 416))
@@ -204,35 +251,49 @@ def main(argv):
             feed_dict={inputs: [np.array(img, dtype=np.float32)]},
         )
         t2 = timer()
-        filtered_boxes = non_max_suppression(
+        unique_boxes = non_max_suppression(
             detected_boxes,
-            confidence_threshold=FLAGS.conf_threshold,
+            confidence_threshold=FLAGS.supp_threshold,
             iou_threshold=FLAGS.iou_threshold,
         )
+        filtered_boxes = {
+            rtype: [
+                (box, p)
+                for box, p in regions
+                if p > FLAGS.conf_threshold
+            ]
+            for rtype, regions in unique_boxes.items()
+        }
         scaled_regions = scale_regions(regions, FLAGS.size)
         tp, fn, fp = compare(filtered_boxes, scaled_regions)
         t3 = timer()
 
-        # print('\tinference time: {}'.format(t2 - t1))
         print('\ttotal time: {}'.format(t3 - t1))
         print('\tTP:{} FN:{} FP:{} Recall:{:.2%} Precision:{:.2%}'
               .format(tp, fn, fp, tp / (tp + fn + 1e-5), tp / (tp + fp + 1e-5)))
-        print('\tfrom model:\n\t', filtered_boxes)
-        print('\tground truth:\n\t', scaled_regions)
 
         draw_boxes(scaled_regions, img_orig, classes, (FLAGS.size, FLAGS.size),
                    (0, 255, 0))
         draw_boxes(filtered_boxes, img_orig, classes, (FLAGS.size, FLAGS.size))
         img_orig.save(os.path.join(FLAGS.output_dir, out_name))
 
-        total_tp += tp
-        total_fn += fn
-        total_fp += fp
+        summary['images'].append({
+            'in_name': in_name,
+            'out_name': out_name,
+            'nn_time': t2 - t1,
+            'total_time': t3 - t1,
+            'tp': tp,
+            'fn': fn,
+            'fp': fp,
+            'detected_boxes': conv_boxes(unique_boxes),
+            'boxes_above_threshold': conv_boxes(filtered_boxes),
+            'marked_boxes': conv_boxes(scaled_regions),
+        })
 
-    print('\nOverall results:')
-    print('TP:{} FN:{} FP:{}'.format(total_tp, total_fn, total_fp))
-    print('Recall: {:.2%}'.format(total_tp / (total_tp + total_fn)))
-    print('Precision: {:.2%}'.format(total_tp / (total_tp + total_fp)))
+    finalize_summary(
+        summary,
+        os.path.join(FLAGS.output_dir, 'summary.json'),
+    )
 
 
 if __name__ == '__main__':
